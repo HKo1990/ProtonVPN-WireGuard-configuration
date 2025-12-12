@@ -3,8 +3,8 @@ import time
 import random 
 import glob 
 import json 
-import zipfile # <--- NEW: for creating zip files
-import requests # <--- NEW: for interacting with Telegram API
+import zipfile 
+import requests 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -19,14 +19,9 @@ CONFIRM_BUTTON_SELECTOR = (By.CSS_SELECTOR, ".button-solid-norm:nth-child(2)")
 # Constants
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloaded_configs")
 SERVER_ID_LOG_FILE = os.path.join(os.getcwd(), "downloaded_server_ids.json") 
-
-# --- CRITICAL CHANGE ---
-# TARGET_COUNTRY_NAME is now None to process all countries.
-TARGET_COUNTRY_NAME = None 
-# ------------------------
-
-MAX_DOWNLOADS_PER_SESSION = 20 # Maximum downloads before relogin (UNCHANGED)
-RELOGIN_DELAY = 120 # Delay in seconds between sessions to cool down the IP (2 minutes)
+TARGET_COUNTRY_NAME = None # Process all countries
+MAX_DOWNLOADS_PER_SESSION = 20 
+RELOGIN_DELAY = 120 
 
 # Environment variables will be read once at runtime
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -149,6 +144,7 @@ class ProtonVPN:
         Processes downloads for ALL countries, limited by MAX_DOWNLOADS_PER_SESSION.
         Returns (all_downloads_finished, downloaded_ids).
         """
+        # ... (Unchanged logic for login, navigation, and core downloading)
         try:
             self.driver.execute_script("window.scrollTo(0,0)")
             time.sleep(1) 
@@ -173,12 +169,10 @@ class ProtonVPN:
                     country_name_element = country.find_element(By.CSS_SELECTOR, "summary")
                     country_name = country_name_element.text.split('\n')[0].strip()
                     
-                    # --- NEW LOGIC: Check if session limit is already reached ---
                     if download_counter >= MAX_DOWNLOADS_PER_SESSION:
                         print(f"Session limit reached ({MAX_DOWNLOADS_PER_SESSION}). Stopping for relogin...")
                         all_downloads_finished = False 
                         return all_downloads_finished, downloaded_ids
-                    # -----------------------------------------------------------
                     
                     print(f"--- Processing country: {country_name} ---")
 
@@ -187,30 +181,24 @@ class ProtonVPN:
 
                     rows = country.find_elements(By.CSS_SELECTOR, "tr")
                     
-                    # Check if all configs in this country are already downloaded
                     all_configs_in_country_downloaded = True 
 
-                    for index, row in enumerate(rows[1:]): # Skip header row
+                    for index, row in enumerate(rows[1:]): 
                         
                         try:
                             file_cell = row.find_element(By.CSS_SELECTOR, "td:nth-child(1)")
                             server_id = file_cell.text.strip()
                             
-                            # --- CRITICAL CHECK: Skip if Server ID is logged ---
                             if server_id in downloaded_ids:
-                                # print(f"Skipping config (Server ID: {server_id}). Already logged.")
                                 continue
                             
-                            # If we found one config NOT downloaded, the country is NOT finished
                             all_configs_in_country_downloaded = False
                             
-                            # --- Check session limit AGAIN before attempting download ---
                             if download_counter >= MAX_DOWNLOADS_PER_SESSION:
                                 print(f"Session limit reached ({MAX_DOWNLOADS_PER_SESSION}). Stopping for relogin...")
                                 all_downloads_finished = False 
                                 return all_downloads_finished, downloaded_ids
-                            # -----------------------------------------------------------
-
+                            
                             btn = row.find_element(By.CSS_SELECTOR, ".button")
 
                         except Exception as e:
@@ -239,7 +227,6 @@ class ProtonVPN:
                             print(f"Successfully downloaded config (Server ID: {server_id}). Total in session: {download_counter}. Waiting {random_delay}s...")
                             time.sleep(random_delay) 
 
-                            # --- CRITICAL: Log the Server ID as downloaded ---
                             downloaded_ids.add(server_id)
                             
                         except (TimeoutException, ElementClickInterceptedException) as e:
@@ -260,7 +247,6 @@ class ProtonVPN:
                 except Exception as e:
                     print(f"Error processing country block for {country_name}: {e}. Continuing to next country.")
                     
-            # If the loop finishes without hitting the session limit, all downloads are complete.
             all_downloads_finished = True 
 
         except Exception as e:
@@ -268,7 +254,7 @@ class ProtonVPN:
             all_downloads_finished = False
             
         return all_downloads_finished, downloaded_ids
-
+    
     
     def organize_and_send_files(self):
         """
@@ -276,24 +262,38 @@ class ProtonVPN:
         """
         print("\n###################### Organizing and Sending Files ######################")
         
-        # 1. Group files by country code (e.g., "US", "JP", "CH")
         country_files = {}
         for filename in os.listdir(DOWNLOAD_DIR):
             if filename.endswith(".ovpn") or filename.endswith(".conf"):
                 try:
-                    # Extract the country code from the start of the file name (e.g., "US" from "US-FREE#...")
-                    # This relies on ProtonVPN's consistent naming convention (e.g., US-FREE#2.conf)
-                    country_code = filename.split('-')[0].split('#')[0].upper()
-                    if len(country_code) > 2: # handle cases like "wg-CH" or "wg-US"
-                        if country_code.startswith("WG-"):
-                            country_code = country_code[3:]
-                        else: # Fallback for complex names
-                             country_code = filename.split('-')[0].upper()
-
-                    if len(country_code) > 2 and country_code.isalpha():
-                         # Assume 2-letter country code
+                    # --- NEW LOGIC FOR COUNTRY CODE EXTRACTION ---
+                    # 1. Clean filename from browser additions (e.g., ' (1)')
+                    name_parts = filename.split('.')
+                    base_name = name_parts[0]
+                    
+                    # 2. Find the country code (e.g., 'US', 'JP', 'CH')
+                    # File names look like: wg-US-FREE-11.conf OR wg-US-FREE-11 (1).conf
+                    
+                    # Remove 'wg-' prefix if present
+                    if base_name.startswith("wg-"):
+                        name_without_prefix = base_name[3:]
+                    else:
+                        name_without_prefix = base_name
+                        
+                    # Extract the first two letters before the next '-' or '#', assuming 2-letter ISO code
+                    # Handles: US-FREE-11, JP-12, CH-FREE-1
+                    country_code = name_without_prefix.split('-')[0].split('#')[0].upper()
+                    
+                    # Ensure the result is a 2-letter code or a known country abbreviation like US, JP
+                    if len(country_code) > 3 or not country_code.isalpha():
+                        # Fallback for complex naming
+                        country_code = 'OTHERS' 
+                    
+                    # If it starts with a country code (e.g., US) but has other chars, keep only the code
+                    if len(country_code) > 2:
                         country_code = country_code[:2]
-
+                    
+                    # -----------------------------------------------
 
                     if country_code not in country_files:
                         country_files[country_code] = []
@@ -313,17 +313,15 @@ class ProtonVPN:
             zip_filename = f"{country_code}_ProtonVPN_Configs.zip"
             zip_path = os.path.join(os.getcwd(), zip_filename)
             
-            # Create the zip file
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in files:
-                    # Add file to zip with only the filename (not the full download path)
                     zipf.write(file_path, os.path.basename(file_path))
 
             print(f"Created {zip_filename} with {len(files)} configurations.")
 
             # 3. Send to Telegram
             if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-                caption = f"✅ کانفیگ‌های جدید WireGuard/OpenVPN برای کشور {country_code}."
+                caption = f"✅ کانفیگ‌های جدید WireGuard/OpenVPN برای کشور {country_code} ({len(files)} فایل)."
                 url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
 
                 try:
@@ -335,6 +333,7 @@ class ProtonVPN:
                     if response.status_code == 200:
                         print(f"Successfully sent {zip_filename} to Telegram.")
                     else:
+                        # Log error details for debugging
                         print(f"Failed to send {zip_filename} to Telegram. Status code: {response.status_code}, Response: {response.text}")
                 except Exception as e:
                     print(f"Telegram API Error for {zip_filename}: {e}")
@@ -346,11 +345,11 @@ class ProtonVPN:
         
         print("File organization and sending process completed.")
         
-        # 5. Clean up downloaded files (optional but recommended to prevent excessive CI space usage)
+        # 5. Clean up downloaded files
         print("Cleaning up individual configuration files...")
         for file in glob.glob(os.path.join(DOWNLOAD_DIR, '*')):
             os.remove(file)
-        # Re-save the log file after cleanup (it should be empty now)
+        # Clear the log file so the next run redownloads everything
         self.save_downloaded_ids(set())
 
 
@@ -359,8 +358,6 @@ class ProtonVPN:
         
         all_downloads_finished = False
         session_count = 0
-        
-        # Load previously downloaded IDs from the log file
         downloaded_ids = self.load_downloaded_ids()
         
         try:
@@ -369,28 +366,21 @@ class ProtonVPN:
                 session_count += 1
                 print(f"\n###################### Starting Session {session_count} ######################")
                 
-                # 1. Setup Driver and Login
                 self.setup()
                 if not self.login(username, password):
                     print("Failed to log in. Aborting run.")
                     break
                 
-                # 2. Navigate and Download
                 if self.navigate_to_downloads():
                     all_downloads_finished, downloaded_ids = self.process_downloads(downloaded_ids)
-                    
-                    # Save the current list of downloaded IDs after each session
                     self.save_downloaded_ids(downloaded_ids)
                 
-                # 3. Logout
                 self.logout()
                 self.teardown() 
                 
                 if all_downloads_finished:
                     print("\n###################### All configurations downloaded successfully! ######################")
-                    # --- NEW: Organize and send files after all downloads are complete ---
                     self.organize_and_send_files()
-                    # --------------------------------------------------------------------
                 else:
                     print(f"Session {session_count} completed. Waiting {RELOGIN_DELAY} seconds before relogging in...")
                     time.sleep(RELOGIN_DELAY) 
